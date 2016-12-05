@@ -11,6 +11,17 @@ import (
 	"strconv"
 )
 
+// Marshaler will be used by the Encoder when writing a type implementing it,
+// allowing the type to determine how it wants to be encoded. The type should
+// write its full RESP representation to the io.Writer.
+//
+// Instead of actually learning the RESP protocol and writing it directly, the
+// io.Writer can itself be wrapped in an Encoder and known types can be written
+// to that instead.
+type Marshaler interface {
+	Marshal(io.Writer) error
+}
+
 func anyIntToInt64(m interface{}) int64 {
 	switch mt := m.(type) {
 	case int:

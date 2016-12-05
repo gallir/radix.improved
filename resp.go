@@ -1,5 +1,10 @@
 package radix
 
+import (
+	"fmt"
+	"io"
+)
+
 var (
 	delim    = []byte{'\r', '\n'}
 	delimEnd = delim[len(delim)-1]
@@ -43,12 +48,6 @@ type Resp struct {
 	Int int64
 }
 
-// Marshaler will be used by the Encoder when writing a type implementing it,
-// the value returned by Marshal will be used instead of the value itself.
-type Marshaler interface {
-	Marshal() (interface{}, error)
-}
-
 // Unmarshaler will be used by the Decoder when reading into a type implementing
 // it. The function given can be used to read the data into a separate temporary
 // value first.
@@ -59,4 +58,31 @@ type Marshaler interface {
 // TODO example
 type Unmarshaler interface {
 	Unmarshal(func(interface{}) error) error
+}
+
+// ArrayHeader represents the header sent preceding array elements in the RESP
+// protocol. It does not actually encompass any elements itself, it only
+// declares how many elements will come after it.
+type ArrayHeader int
+
+// Marshal implements the method for the Marshaler interface. It will only write
+// the array header, for your RESP stream to be valid you must write the same
+// number of elements as the ArrayHeader's value after it.
+func (ah ArrayHeader) Marshal(w io.Writer) error {
+	_, err := fmt.Fprintf(w, "*%d\r\n", ah)
+	return err
+}
+
+// SimpleString is a special RESP type which differs in the protocol from a
+// BulkStr. The built-in Encoder will always encode []byte and strings into bulk
+// strings, and the Decoder treats simple strings and bulk strings as
+// equivalent. This type can be used if you explicitly wish to encode into a
+// SimpleString.
+type SimpleString string
+
+// Marshal implements the method for the Marshaler interface. It will write the
+// string in the format of a RESP simple string.
+func (ss SimpleString) Marshal(w io.Writer) error {
+	_, err := fmt.Fprintf(w, "+%s\r\n", ss)
+	return err
 }
