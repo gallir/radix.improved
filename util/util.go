@@ -3,9 +3,9 @@
 package util
 
 import (
-	"github.com/gallir/radix.v2/cluster"
-	"github.com/gallir/radix.v2/pool"
-	"github.com/gallir/radix.v2/redis"
+	"github.com/gallir/radix.improved/cluster"
+	"github.com/gallir/radix.improved/pool"
+	"github.com/gallir/radix.improved/redis"
 )
 
 // Cmder is an interface which can be used to interchangeably work with either

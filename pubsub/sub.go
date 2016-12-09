@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/gallir/radix.v2/redis"
+	"github.com/gallir/radix.improved/redis"
 )
 
 // SubRespType describes the type of the response  being returned from one of

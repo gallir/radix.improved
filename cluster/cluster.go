@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gallir/radix.v2/pool"
-	"github.com/gallir/radix.v2/redis"
+	"github.com/gallir/radix.improved/pool"
+	"github.com/gallir/radix.improved/redis"
 )
 
 const numSlots = 16384

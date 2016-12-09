@@ -4,8 +4,8 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/gallir/radix.v2/cluster"
-	"github.com/gallir/radix.v2/redis"
+	"github.com/gallir/radix.improved/cluster"
+	"github.com/gallir/radix.improved/redis"
 )
 
 // ScanOpts are various parameters which can be passed into ScanWithOpts. Some
