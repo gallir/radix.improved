@@ -1,7 +1,6 @@
 package redis
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"net"
@@ -20,7 +19,6 @@ type Client struct {
 	timeout      time.Duration
 	pending      []request
 	writeScratch []byte
-	writeBuf     *bufio.Writer
 
 	completed, completedHead []*Resp
 
@@ -62,7 +60,6 @@ func DialTimeout(network, addr string, timeout time.Duration) (*Client, error) {
 		respReader:    NewRespReader(conn),
 		timeout:       timeout,
 		writeScratch:  make([]byte, 0, 128),
-		writeBuf:      bufio.NewWriter(conn),
 		completed:     completed,
 		completedHead: completed,
 		Network:       network,
@@ -173,30 +170,23 @@ func (c *Client) writeRequest(requests ...request) error {
 outer:
 	for i := range requests {
 		elems := flattenedLength(requests[i].args...) + 1
-		_, err = writeArrayHeader(c.writeBuf, c.writeScratch, int64(elems))
+		_, err = writeArrayHeader(c.conn, c.writeScratch, int64(elems))
 		if err != nil {
-			c.writeBuf.Reset(c.conn)
 			break
 		}
 
-		_, err = writeTo(c.writeBuf, c.writeScratch, requests[i].cmd, true, true)
+		_, err = writeTo(c.conn, c.writeScratch, requests[i].cmd, true, true)
 		if err != nil {
-			c.writeBuf.Reset(c.conn)
 			break
 		}
 
 		for _, arg := range requests[i].args {
-			_, err = writeTo(c.writeBuf, c.writeScratch, arg, true, true)
+			_, err = writeTo(c.conn, c.writeScratch, arg, true, true)
 			if err != nil {
-				c.writeBuf.Reset(c.conn)
 				break outer
 			}
 		}
 
-		if err = c.writeBuf.Flush(); err != nil {
-			c.writeBuf.Reset(c.conn)
-			break
-		}
 	}
 	if err != nil {
 		c.LastCritical = err
