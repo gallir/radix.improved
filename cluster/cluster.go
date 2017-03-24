@@ -549,7 +549,7 @@ func (c *Cluster) clientCmd(
 	// Deal with network error
 	if r.IsType(redis.IOErr) {
 		c.setFaulty(true)
-		// Wive up and return the most recent error
+		// Give up and return the most recent error
 		// The faulty monitor will recover
 		return r
 	}
