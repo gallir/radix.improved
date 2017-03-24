@@ -25,7 +25,10 @@ import (
 	"github.com/gallir/radix.improved/redis"
 )
 
-const numSlots = 16384
+const (
+	numSlots          = 16384
+	faultyCheckPeriod = 2 * time.Second
+)
 
 type mapping [numSlots]string
 
@@ -474,47 +477,48 @@ func (c *Cluster) isFaulty() bool {
 }
 
 func (c *Cluster) faultyMonitor() {
-	responseCh := make(chan bool)
-
 	for c.isFaulty() {
-		time.Sleep(1 * time.Second)
 		c.callCh <- func(c *Cluster) {
-			if len(c.pools) == 0 {
-				responseCh <- false
+			if !c.isFaulty() {
 				return
 			}
-			var p *pool.Pool
-			var client *redis.Client
-			var err error
+
+			p := c.getRandomPoolInner()
+			if p == nil {
+				return
+			}
+
+			// There may be clients with old stalled connections
+			p.Empty()
+
+			if e := c.resetInnerUsingPool(p); e != nil {
+				return
+			}
+
+			if len(c.pools) == 0 {
+				return
+			}
+
 			// Check that all pools in the cluster are available
-			for _, p = range c.pools {
-				client, err = p.Get()
+			for _, p := range c.pools {
+				client, err := p.Get()
 				if err != nil {
-					responseCh <- false
 					return
 				}
 				r := client.Cmd("CLUSTER", "INFO")
 				if r.Err != nil {
-					if r.IsType(redis.IOErr) {
-						p.Empty()
-					}
-					responseCh <- false
 					return
 				}
 				p.Put(client)
 				// Check the node in the cluster and it's ok
 				if !strings.Contains(r.String(), "cluster_state:ok") {
-					responseCh <- false
 					return
 				}
 			}
 			log.Printf("Cluster %s recovered", c.o.Addr)
 			c.setFaulty(false)
-			responseCh <- true
 		}
-		if <-responseCh {
-			return
-		}
+		time.Sleep(faultyCheckPeriod)
 	}
 }
 
@@ -542,34 +546,11 @@ func (c *Cluster) clientCmd(
 		return r
 	}
 
-	// At this point we have some kind of error we have to deal with. The above
-	// code is what will be run 99% of the time and is pretty streamlined,
-	// everything after this point is allowed to be hairy and gross
-
-	haveTriedBefore := haveTried(tried, client.Addr)
-	tried = justTried(tried, client.Addr)
-
 	// Deal with network error
 	if r.IsType(redis.IOErr) {
 		c.setFaulty(true)
-		// If this is the first time trying this node, try it again
-		if !haveTriedBefore {
-			if client, try2err := c.getConn("", client.Addr); try2err == nil {
-				return c.clientCmd(client, cmd, args, false, tried, haveReset)
-			}
-		}
-		// Otherwise try calling Reset() and getting a random client
-		if !haveReset {
-			if resetErr := c.Reset(); resetErr != nil {
-				return errorRespf("Could not get cluster info: %s", resetErr)
-			}
-			client, getErr := c.getConn("", "")
-			if getErr != nil {
-				return errorResp(getErr)
-			}
-			return c.clientCmd(client, cmd, args, false, tried, true)
-		}
-		// Otherwise give up and return the most recent error
+		// Wive up and return the most recent error
+		// The faulty monitor will recover
 		return r
 	}
 
