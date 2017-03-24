@@ -15,8 +15,10 @@ package cluster
 import (
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gallir/radix.improved/pool"
@@ -41,6 +43,8 @@ var (
 	ErrBadCmdNoKey = errors.New("bad command, no key")
 
 	errNoPools = errors.New("no pools to pull from")
+
+	errUnavailable = errors.New("cluster not available")
 )
 
 // DialFunc is a function which can be incorporated into Opts. Note that network
@@ -56,6 +60,7 @@ type Cluster struct {
 	resetThrottle *time.Ticker
 	callCh        chan func(*Cluster)
 	stopCh        chan struct{}
+	ioError       int32
 
 	// This is written to whenever a slot miss (either a MOVED or ASK) is
 	// encountered. This is mainly for informational purposes, it's not meant to
@@ -419,6 +424,10 @@ func (c *Cluster) Cmd(cmd string, args ...interface{}) *redis.Resp {
 		return errorResp(ErrBadCmdNoKey)
 	}
 
+	if c.isFaulty() {
+		return errorResp(errUnavailable)
+	}
+
 	key, err := redis.KeyFromArgs(args)
 	if err != nil {
 		return errorResp(err)
@@ -445,6 +454,68 @@ func justTried(tried map[string]bool, addr string) map[string]bool {
 	}
 	tried[addr] = true
 	return tried
+}
+
+func (c *Cluster) setFaulty(s bool) {
+	if s {
+		changed := atomic.CompareAndSwapInt32(&c.ioError, 0, 1)
+		if changed { // Before it was 0
+			log.Printf("Cluster %s entered into faulty mode", c.o.Addr)
+			go c.faultyMonitor()
+		}
+	} else {
+		atomic.StoreInt32(&c.ioError, 0)
+	}
+}
+
+func (c *Cluster) isFaulty() bool {
+	s := atomic.LoadInt32(&c.ioError)
+	return s > 0
+}
+
+func (c *Cluster) faultyMonitor() {
+	responseCh := make(chan bool)
+
+	for c.isFaulty() {
+		time.Sleep(1 * time.Second)
+		c.callCh <- func(c *Cluster) {
+			if len(c.pools) == 0 {
+				responseCh <- false
+				return
+			}
+			var p *pool.Pool
+			var client *redis.Client
+			var err error
+			// Check that all pools in the cluster are available
+			for _, p = range c.pools {
+				client, err = p.Get()
+				if err != nil {
+					responseCh <- false
+					return
+				}
+				r := client.Cmd("CLUSTER", "INFO")
+				if r.Err != nil {
+					if r.IsType(redis.IOErr) {
+						p.Empty()
+					}
+					responseCh <- false
+					return
+				}
+				p.Put(client)
+				// Check the node in the cluster and it's ok
+				if !strings.Contains(r.String(), "cluster_state:ok") {
+					responseCh <- false
+					return
+				}
+			}
+			log.Printf("Cluster %s recovered", c.o.Addr)
+			c.setFaulty(false)
+			responseCh <- true
+		}
+		if <-responseCh {
+			return
+		}
+	}
 }
 
 func (c *Cluster) clientCmd(
@@ -480,6 +551,7 @@ func (c *Cluster) clientCmd(
 
 	// Deal with network error
 	if r.IsType(redis.IOErr) {
+		c.setFaulty(true)
 		// If this is the first time trying this node, try it again
 		if !haveTriedBefore {
 			if client, try2err := c.getConn("", client.Addr); try2err == nil {
