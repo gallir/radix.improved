@@ -237,11 +237,13 @@ func (c *Cluster) getConn(key, addr string) (*redis.Client, error) {
 		// before bailing
 		p = c.getRandomPoolInner()
 		if p == nil {
+			c.setFaulty(true)
 			respCh <- &resp{err: errNoPools}
 			return
 		}
 		conn, err = p.Get()
 		if err != nil {
+			c.setFaulty(true)
 			respCh <- &resp{err: err}
 			return
 		}
@@ -441,22 +443,7 @@ func (c *Cluster) Cmd(cmd string, args ...interface{}) *redis.Resp {
 		return errorResp(err)
 	}
 
-	return c.clientCmd(client, cmd, args, false, nil, false)
-}
-
-func haveTried(tried map[string]bool, addr string) bool {
-	if tried == nil {
-		return false
-	}
-	return tried[addr]
-}
-
-func justTried(tried map[string]bool, addr string) map[string]bool {
-	if tried == nil {
-		tried = map[string]bool{}
-	}
-	tried[addr] = true
-	return tried
+	return c.clientCmd(client, cmd, args, false, false)
 }
 
 func (c *Cluster) setFaulty(s bool) {
@@ -524,7 +511,7 @@ func (c *Cluster) faultyMonitor() {
 
 func (c *Cluster) clientCmd(
 	client *redis.Client, cmd string, args []interface{}, ask bool,
-	tried map[string]bool, haveReset bool,
+	haveReset bool,
 ) *redis.Resp {
 	var err error
 	var r *redis.Resp
@@ -571,24 +558,20 @@ func (c *Cluster) clientCmd(
 		// cluster is having problems, likely telling us to try a node which is
 		// not reachable. Not much which can be done at this point
 		if haveReset {
+			c.setFaulty(true) // Get new information from the cluster
 			return errorRespf("Cluster doesn't make sense, %s might be gone", addr)
 		}
 		if resetErr := c.Reset(); resetErr != nil {
+			c.setFaulty(true) // Get new information from the cluster
 			return errorRespf("Could not get cluster info: %s", resetErr)
 		}
 		haveReset = true
-
-		// At this point addr is whatever redis told us it should be. However,
-		// if we can't get a connection to it we'll never actually mark it as
-		// tried, resulting in an infinite loop. Here we mark it as tried
-		// regardless of if it actually was or not
-		tried = justTried(tried, addr)
 
 		client, getErr := c.getConn("", addr)
 		if getErr != nil {
 			return errorResp(getErr)
 		}
-		return c.clientCmd(client, cmd, args, ask, tried, haveReset)
+		return c.clientCmd(client, cmd, args, ask, haveReset)
 	}
 
 	// It's a normal application error (like WRONG KEY TYPE or whatever), return
