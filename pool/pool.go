@@ -28,21 +28,18 @@ func NewCustom(network, addr string, size int, df DialFunc) (*Pool, error) {
 	var client *redis.Client
 	var err error
 	pool := make([]*redis.Client, 0, size)
-	for i := 0; i < size; i++ {
-		client, err = df(network, addr)
-		if err != nil {
-			for _, client = range pool {
-				client.Close()
-			}
-			pool = pool[0:]
-			break
+	client, err = df(network, addr)
+	if err != nil {
+		for _, client = range pool {
+			client.Close()
 		}
-		pool = append(pool, client)
+		pool = pool[0:]
 	}
+	pool = append(pool, client)
 	p := Pool{
 		Network: network,
 		Addr:    addr,
-		pool:    make(chan *redis.Client, len(pool)),
+		pool:    make(chan *redis.Client, size),
 		df:      df,
 	}
 	for i := range pool {
