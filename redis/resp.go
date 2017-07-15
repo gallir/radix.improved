@@ -228,7 +228,6 @@ func readArray(r *bufio.Reader) (Resp, error) {
 		return Resp{}, err
 	}
 	size, err := strconv.ParseInt(string(b[1:len(b)-2]), 10, 64)
-	fmt.Println(size, err)
 	if err != nil {
 		return Resp{}, errParse
 	}
