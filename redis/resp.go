@@ -2,6 +2,7 @@ package redis
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -9,11 +10,17 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+
+	"github.com/gallir/bytebufferpool"
+	"github.com/golang/snappy"
 )
 
 var (
 	delim    = []byte{'\r', '\n'}
 	delimEnd = delim[len(delim)-1]
+
+	// UsePool enable to use vayala bytes buffer pools
+	UsePool = true
 )
 
 // RespType is a field on every Resp which indicates the type of the data it
@@ -40,6 +47,8 @@ const (
 	// field on their Resp is filled. To determine if a Resp is an error you'll
 	// most often want to simply check if the Err field on it is nil
 	Err = IOErr | AppErr
+
+	pollMinSize = 64
 )
 
 var (
@@ -66,8 +75,9 @@ var (
 // server. Each Resp has a type (see RespType and IsType) and a value. Values
 // can be retrieved using any of the casting methods on this type (e.g. Str)
 type Resp struct {
-	typ RespType
-	val interface{}
+	typ        RespType
+	val        interface{}
+	byteBuffer *bytebufferpool.ByteBuffer
 
 	// Err indicates that this Resp signals some kind of error, either on the
 	// connection level or the application level. Use IsType if you need to
@@ -200,7 +210,14 @@ func readBulkStr(r *bufio.Reader) (Resp, error) {
 	if size < 0 {
 		return Resp{typ: Nil}, nil
 	}
-	total := make([]byte, size)
+	var total []byte
+	var bb *bytebufferpool.ByteBuffer
+	if UsePool {
+		bb = bytebufferpool.Get()
+		total = bb.B
+	} else {
+		total = make([]byte, size)
+	}
 	b2 := total
 	var n int
 	for len(b2) > 0 {
@@ -219,7 +236,7 @@ func readBulkStr(r *bufio.Reader) (Resp, error) {
 		}
 	}
 
-	return Resp{typ: BulkStr, val: total}, nil
+	return Resp{typ: BulkStr, val: total, byteBuffer: bb}, nil
 }
 
 func readArray(r *bufio.Reader) (Resp, error) {
@@ -265,11 +282,22 @@ func (r *Resp) WriteTo(w io.Writer) (int64, error) {
 	// SimpleStr is a special case, writeTo always writes strings as BulkStrs,
 	// so we just manually do SimpleStr here
 	if r.typ == SimpleStr {
+		var err error
+		var written int
+		var b []byte
 		s := r.val.([]byte)
-		b := append(make([]byte, 0, len(s)+3), simpleStrPrefix...)
-		b = append(b, s...)
-		b = append(b, delim...)
-		written, err := w.Write(b)
+		if UsePool {
+			bb := bytebufferpool.Get()
+			bb.B = append(bb.B, simpleStrPrefix...)
+			bb.B = append(bb.B, s...)
+			bb.B = append(bb.B, delim...)
+			b = bb.B
+		} else {
+			b = append(make([]byte, 0, len(s)+3), simpleStrPrefix...)
+			b = append(b, s...)
+			b = append(b, delim...)
+		}
+		written, err = w.Write(b)
 		return int64(written), err
 	}
 
@@ -824,6 +852,8 @@ func IsTimeout(r *Resp) bool {
 // NewResp and NewRespFlattenedStrings
 func format(m interface{}, forceString bool) Resp {
 	switch mt := m.(type) {
+	case *bytebufferpool.ByteBuffer:
+		return Resp{typ: BulkStr, val: mt.B, byteBuffer: mt}
 	case []byte:
 		return Resp{typ: BulkStr, val: mt}
 	case string:
@@ -909,4 +939,131 @@ func format(m interface{}, forceString bool) Resp {
 			return Resp{typ: BulkStr, val: []byte(fmt.Sprint(m))}
 		}
 	}
+}
+
+/* Buyffer and Compression functions
+ */
+
+// ReleaseBuffers releases bytbuffers and put val to nil
+func (r *Resp) ReleaseBuffers() (changed bool) {
+	if r.IsType(Str) {
+		if r.byteBuffer == nil {
+			return
+		}
+
+		r.val = nil
+		bytebufferpool.Put(r.byteBuffer)
+		return true
+	}
+
+	a, err := r.betterArray()
+	if err != nil {
+		return
+	}
+
+	for _, arg := range a {
+		if !arg.IsType(Str) {
+			continue
+		}
+		changed = arg.ReleaseBuffers()
+	}
+	return
+}
+
+const compressPageSize = 256
+
+// Compress compresses an entire *Resp
+func (r *Resp) Compress(minSize int, marker []byte) (changed bool) {
+	if r.IsType(Str) {
+		b := r.val.([]byte)
+		if len(b) < minSize {
+			return
+		}
+		n := snappy.MaxEncodedLen(len(b)) + len(marker)
+		var buf []byte
+		var bb *bytebufferpool.ByteBuffer
+
+		if UsePool {
+			bb := bytebufferpool.Get()
+			buf = bb.B
+		} else {
+			buf = make([]byte, (n/compressPageSize+1)*compressPageSize)
+		}
+		copy(buf, marker)
+		snappy.Encode(buf[len(marker):], b)
+		if len(b) <= len(marker) {
+			return
+		}
+		if UsePool {
+			if r.byteBuffer != nil {
+				bytebufferpool.Put(r.byteBuffer)
+			}
+			r.byteBuffer = bb
+		}
+		r.val = b
+		return true
+	}
+
+	a, err := r.betterArray()
+	if err != nil {
+		return
+	}
+
+	for _, arg := range a {
+		if !arg.IsType(Str) {
+			continue
+		}
+		changed = arg.Compress(minSize, marker)
+	}
+	return
+}
+
+// Uncompress compresses an entire *Resp
+func (r *Resp) Uncompress(marker []byte) (changed bool) {
+	if r.IsType(Str) {
+		b := r.val.([]byte)
+
+		if !bytes.HasPrefix(b, marker) {
+			return
+		}
+
+		n := snappy.MaxEncodedLen(len(b)) + len(marker)
+		var buf []byte
+		var bb *bytebufferpool.ByteBuffer
+
+		if UsePool {
+			bb := bytebufferpool.Get()
+			buf = bb.B
+		} else {
+			buf = make([]byte, (n/compressPageSize+1)*compressPageSize)
+		}
+
+		uncompressed, e := snappy.Decode(buf, b[len(marker):])
+		if e != nil {
+			return
+		}
+
+		if UsePool {
+			if r.byteBuffer != nil {
+				bytebufferpool.Put(r.byteBuffer)
+			}
+			r.byteBuffer = bb
+			bb.B = uncompressed
+		}
+		r.val = b
+		return true
+	}
+
+	a, err := r.betterArray()
+	if err != nil {
+		return
+	}
+
+	for _, arg := range a {
+		if !arg.IsType(Str) {
+			continue
+		}
+		changed = arg.Uncompress(marker)
+	}
+	return
 }
