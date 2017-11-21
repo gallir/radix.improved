@@ -49,6 +49,8 @@ var (
 	bulkStrPrefix   = []byte{'$'}
 	arrayPrefix     = []byte{'*'}
 	nilFormatted    = []byte("$-1\r\n")
+	byte0           = []byte{'0'}
+	byte1           = []byte{'1'}
 )
 
 // Parse errors
@@ -830,12 +832,12 @@ func format(m interface{}, forceString bool) Resp {
 		return Resp{typ: BulkStr, val: []byte(mt)}
 	case bool:
 		if mt {
-			return Resp{typ: BulkStr, val: []byte{'1'}}
+			return Resp{typ: BulkStr, val: byte1}
 		}
-		return Resp{typ: BulkStr, val: []byte{'0'}}
+		return Resp{typ: BulkStr, val: byte0}
 	case nil:
 		if forceString {
-			return Resp{typ: BulkStr, val: []byte{'0'}}
+			return Resp{typ: BulkStr, val: byte0}
 		}
 		return Resp{typ: Nil}
 	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
