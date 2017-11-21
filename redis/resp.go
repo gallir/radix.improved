@@ -212,13 +212,11 @@ func readBulkStr(r *bufio.Reader) (Resp, error) {
 	}
 
 	// There's a hanging \r\n there, gotta read past it
-	trail := make([]byte, 2)
 	for i := 0; i < 2; i++ {
-		c, err := r.ReadByte()
+		_, err := r.ReadByte()
 		if err != nil {
 			return Resp{}, err
 		}
-		trail[i] = c
 	}
 
 	return Resp{typ: BulkStr, val: total}, nil
