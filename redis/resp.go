@@ -20,7 +20,7 @@ var (
 	delimEnd = delim[len(delim)-1]
 
 	// UsePool enable to use vayala bytes buffer pools
-	UsePool = true
+	UsePool = 0
 )
 
 // RespType is a field on every Resp which indicates the type of the data it
@@ -212,8 +212,11 @@ func readBulkStr(r *bufio.Reader) (Resp, error) {
 	}
 	var total []byte
 	var bb *bytebufferpool.ByteBuffer
-	if UsePool {
+	if UsePool > 0 && int(size) >= UsePool {
 		bb = bytebufferpool.Get()
+		if len(bb.B) < int(size) {
+			bb.B = make([]byte, size)
+		}
 		total = bb.B
 	} else {
 		total = make([]byte, size)
@@ -286,7 +289,7 @@ func (r *Resp) WriteTo(w io.Writer) (int64, error) {
 		var written int
 		var b []byte
 		s := r.val.([]byte)
-		if UsePool {
+		if UsePool > 0 && len(s) >= UsePool {
 			bb := bytebufferpool.Get()
 			bb.B = append(bb.B, simpleStrPrefix...)
 			bb.B = append(bb.B, s...)
@@ -381,6 +384,18 @@ func (r *Resp) betterArray() ([]Resp, error) {
 		return a, nil
 	}
 	return nil, errNotArray
+}
+
+// First return a string of the request or the first element in the array
+func (r *Resp) First() (string, error) {
+	if r.IsType(Str) {
+		return r.Str()
+	}
+	a, err := r.betterArray()
+	if err != nil {
+		return "", err
+	}
+	return a[0].Str()
 }
 
 // Array returns the Resp slice encompassed by this Resp. Only valid for a Resp
@@ -973,97 +988,106 @@ func (r *Resp) ReleaseBuffers() (changed bool) {
 const compressPageSize = 256
 
 // Compress compresses an entire *Resp
-func (r *Resp) Compress(minSize int, marker []byte) (changed bool) {
+func (r *Resp) Compress(minSize int, marker []byte) *Resp {
 	if r.IsType(Str) {
 		b := r.val.([]byte)
 		if len(b) < minSize {
-			return
+			return nil
 		}
 		n := snappy.MaxEncodedLen(len(b)) + len(marker)
+		need := (n/compressPageSize + 1) * compressPageSize
 		var buf []byte
 		var bb *bytebufferpool.ByteBuffer
 
-		if UsePool {
-			bb := bytebufferpool.Get()
-			buf = bb.B
+		if r.byteBuffer != nil {
+			bb = bytebufferpool.Get()
+			for len(bb.B) < need {
+				bb.B = append(bb.B[:cap(bb.B)], 0)
+			}
+			buf = bb.B[:need]
 		} else {
-			buf = make([]byte, (n/compressPageSize+1)*compressPageSize)
+			buf = make([]byte, need)
 		}
 		copy(buf, marker)
-		snappy.Encode(buf[len(marker):], b)
-		if len(b) <= len(marker) {
-			return
+		compressed := snappy.Encode(buf[len(marker):], b)
+		if len(buf) <= len(marker) {
+			return nil
 		}
-		if UsePool {
-			if r.byteBuffer != nil {
-				bytebufferpool.Put(r.byteBuffer)
-			}
+		if r.byteBuffer != nil {
+			bytebufferpool.Put(r.byteBuffer)
 			r.byteBuffer = bb
 		}
-		r.val = b
-		return true
+		r.val = buf[:len(marker)+len(compressed)]
+		return r
 	}
 
-	a, err := r.betterArray()
-	if err != nil {
-		return
+	vals, ok := r.val.([]Resp)
+	if !ok {
+		return nil
 	}
-
-	for _, arg := range a {
+	for i, arg := range vals {
 		if !arg.IsType(Str) {
 			continue
 		}
-		changed = arg.Compress(minSize, marker)
+		r2 := arg.Compress(minSize, marker)
+		if r2 != nil {
+			vals[i] = *r2
+		}
 	}
-	return
+	return r
 }
 
 // Uncompress compresses an entire *Resp
-func (r *Resp) Uncompress(marker []byte) (changed bool) {
+func (r *Resp) Uncompress(marker []byte) *Resp {
 	if r.IsType(Str) {
 		b := r.val.([]byte)
 
 		if !bytes.HasPrefix(b, marker) {
-			return
+			return nil
 		}
 
 		n := snappy.MaxEncodedLen(len(b)) + len(marker)
+		need := (n/compressPageSize + 1) * compressPageSize
+
 		var buf []byte
 		var bb *bytebufferpool.ByteBuffer
 
-		if UsePool {
-			bb := bytebufferpool.Get()
-			buf = bb.B
+		if r.byteBuffer != nil {
+			bb = bytebufferpool.Get()
+			for len(bb.B) < need {
+				bb.B = append(bb.B[:cap(bb.B)], 0)
+			}
+			buf = bb.B[:need]
 		} else {
 			buf = make([]byte, (n/compressPageSize+1)*compressPageSize)
 		}
 
 		uncompressed, e := snappy.Decode(buf, b[len(marker):])
 		if e != nil {
-			return
+			return nil
 		}
 
-		if UsePool {
-			if r.byteBuffer != nil {
-				bytebufferpool.Put(r.byteBuffer)
-			}
+		if r.byteBuffer != nil {
+			bytebufferpool.Put(r.byteBuffer)
 			r.byteBuffer = bb
-			bb.B = uncompressed
 		}
-		r.val = b
-		return true
+		r.val = uncompressed
+		return r
 	}
 
-	a, err := r.betterArray()
-	if err != nil {
-		return
+	vals, ok := r.val.([]Resp)
+	if !ok {
+		return nil
 	}
-
-	for _, arg := range a {
+	for i, arg := range vals {
 		if !arg.IsType(Str) {
 			continue
 		}
-		changed = arg.Uncompress(marker)
+		r2 := arg.Uncompress(marker)
+		if r2 != nil {
+			vals[i] = *r2
+		}
 	}
-	return
+	return r
+
 }
