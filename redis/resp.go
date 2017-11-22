@@ -960,27 +960,23 @@ func format(m interface{}, forceString bool) Resp {
  */
 
 // ReleaseBuffers releases bytbuffers and put val to nil
-func (r *Resp) ReleaseBuffers() (changed bool) {
+func (r *Resp) ReleaseBuffers() (released bool) {
 	if r.IsType(Str) {
 		if r.byteBuffer == nil {
 			return
 		}
-
 		r.val = nil
 		bytebufferpool.Put(r.byteBuffer)
 		return true
 	}
 
-	a, err := r.betterArray()
-	if err != nil {
+	vals, ok := r.val.([]Resp)
+	if !ok {
 		return
 	}
 
-	for _, arg := range a {
-		if !arg.IsType(Str) {
-			continue
-		}
-		changed = arg.ReleaseBuffers()
+	for _, arg := range vals {
+		released = arg.ReleaseBuffers()
 	}
 	return
 }
@@ -990,8 +986,8 @@ const compressPageSize = 256
 // Compress compresses an entire *Resp
 func (r *Resp) Compress(minSize int, marker []byte) *Resp {
 	if r.IsType(Str) {
-		b := r.val.([]byte)
-		if len(b) < minSize {
+		b, ok := r.val.([]byte)
+		if !ok || len(b) < minSize {
 			return nil
 		}
 		n := snappy.MaxEncodedLen(len(b)) + len(marker)
@@ -1040,9 +1036,8 @@ func (r *Resp) Compress(minSize int, marker []byte) *Resp {
 // Uncompress compresses an entire *Resp
 func (r *Resp) Uncompress(marker []byte) *Resp {
 	if r.IsType(Str) {
-		b := r.val.([]byte)
-
-		if !bytes.HasPrefix(b, marker) {
+		b, ok := r.val.([]byte)
+		if !ok || !bytes.HasPrefix(b, marker) {
 			return nil
 		}
 
