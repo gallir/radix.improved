@@ -961,6 +961,9 @@ func format(m interface{}, forceString bool) Resp {
 
 // ReleaseBuffers releases bytbuffers and put val to nil
 func (r *Resp) ReleaseBuffers() (changed bool) {
+	if UsePool == 0 {
+		return
+	}
 	if r.IsType(Str) {
 		if r.byteBuffer == nil {
 			return
