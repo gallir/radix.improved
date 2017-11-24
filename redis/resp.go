@@ -214,9 +214,7 @@ func readBulkStr(r *bufio.Reader) (Resp, error) {
 	var bb *bytebufferpool.ByteBuffer
 	if UsePool > 0 && int(size) >= UsePool {
 		bb = bytebufferpool.Get()
-		if len(bb.B) < int(size) {
-			bb.B = make([]byte, size)
-		}
+		bb.B = resize(bb.B, int(size))
 		total = bb.B
 	} else {
 		total = make([]byte, size)
@@ -1000,10 +998,8 @@ func (r *Resp) Compress(minSize int, marker []byte) *Resp {
 
 		if r.byteBuffer != nil {
 			bb = bytebufferpool.Get()
-			for len(bb.B) < need {
-				bb.B = append(bb.B[:cap(bb.B)], 0)
-			}
-			buf = bb.B[:need]
+			bb.B = resize(bb.B, need)
+			buf = bb.B
 		} else {
 			buf = make([]byte, need)
 		}
@@ -1052,10 +1048,8 @@ func (r *Resp) Uncompress(marker []byte) *Resp {
 
 		if r.byteBuffer != nil {
 			bb = bytebufferpool.Get()
-			for len(bb.B) < need {
-				bb.B = append(bb.B[:cap(bb.B)], 0)
-			}
-			buf = bb.B[:need]
+			bb.B = resize(bb.B, need)
+			buf = bb.B
 		} else {
 			buf = make([]byte, (n/compressPageSize+1)*compressPageSize)
 		}
@@ -1088,4 +1082,11 @@ func (r *Resp) Uncompress(marker []byte) *Resp {
 	}
 	return r
 
+}
+
+func resize(buf []byte, size int) []byte {
+	if cap(buf) < size {
+		return make([]byte, size)
+	}
+	return append(buf, make([]byte, size-len(buf))...)
 }
