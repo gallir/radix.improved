@@ -213,8 +213,7 @@ func readBulkStr(r *bufio.Reader) (Resp, error) {
 	var total []byte
 	var bb *bytebufferpool.ByteBuffer
 	if UsePool > 0 && int(size) >= UsePool {
-		bb = bytebufferpool.Get()
-		bb.B = resize(bb.B, int(size))
+		bb = bytebufferpool.GetLen(int(size))
 		total = bb.B
 	} else {
 		total = make([]byte, size)
@@ -997,8 +996,7 @@ func (r *Resp) Compress(minSize int, marker []byte) *Resp {
 		var bb *bytebufferpool.ByteBuffer
 
 		if r.byteBuffer != nil {
-			bb = bytebufferpool.Get()
-			bb.B = resize(bb.B, need)
+			bb = bytebufferpool.GetLen(need)
 			buf = bb.B
 		} else {
 			buf = make([]byte, need)
@@ -1047,8 +1045,7 @@ func (r *Resp) Uncompress(marker []byte) *Resp {
 		var bb *bytebufferpool.ByteBuffer
 
 		if r.byteBuffer != nil {
-			bb = bytebufferpool.Get()
-			bb.B = resize(bb.B, need)
+			bb = bytebufferpool.GetLen(need)
 			buf = bb.B
 		} else {
 			buf = make([]byte, (n/compressPageSize+1)*compressPageSize)
@@ -1082,11 +1079,4 @@ func (r *Resp) Uncompress(marker []byte) *Resp {
 	}
 	return r
 
-}
-
-func resize(buf []byte, size int) []byte {
-	if cap(buf) < size {
-		return make([]byte, size)
-	}
-	return append(buf, make([]byte, size-len(buf))...)
 }
