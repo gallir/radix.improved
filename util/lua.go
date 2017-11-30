@@ -29,9 +29,9 @@ func LuaEval(c Cmder, script string, keys int, args ...interface{}) *redis.Resp 
 
 	var r *redis.Resp
 	if err := withClientForKey(c, mainKey, func(cc Cmder) {
-		r = c.Cmd("EVALSHA", sum, keys, args)
+		r = cc.Cmd("EVALSHA", sum, keys, args)
 		if r.Err != nil && strings.HasPrefix(r.Err.Error(), "NOSCRIPT") {
-			r = c.Cmd("EVAL", script, keys, args)
+			r = cc.Cmd("EVAL", script, keys, args)
 		}
 	}); err != nil {
 		return redis.NewResp(err)

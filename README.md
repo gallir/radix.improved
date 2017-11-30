@@ -35,6 +35,12 @@ small, single-purpose packages for ease of use.
   radix package, such as SCANing either a single redis instance or every one in
   a cluster, or executing server-side lua
 
+## V3
+
+If you're so inclined, [radix.v3](https://github.com/mediocregopher/radix.v3) is
+available for beta testing. If you like v2 you'll probably love v3, it's got
+everything v2 does and is faster, cleaner, and more flexible. Check it out!
+
 ## Installation
 
     go get github.com/mediocregopher/radix.v2/...
