@@ -442,7 +442,6 @@ func (c *Cluster) setFaulty(s bool) {
 	if s {
 		changed := atomic.CompareAndSwapInt32(&c.ioError, 0, 1)
 		if changed { // Before it was 0
-			log.Printf("Cluster %s entered into faulty mode", c.o.Addr)
 			go c.faultyMonitor()
 		}
 	} else {
@@ -498,6 +497,9 @@ func (c *Cluster) faultyMonitor() {
 
 		if c.isFaulty() {
 			failures++
+			if failures == 1 {
+				log.Printf("Cluster %s entered into faulty mode", c.o.Addr)
+			}
 			if failures%5 == 0 {
 				log.Printf("Trying reset on cluster %s after %d failures", c.o.Addr, failures)
 			}
