@@ -502,8 +502,8 @@ func (c *Cluster) faultyMonitor() {
 			}
 			if failures%5 == 0 {
 				log.Printf("Trying reset on cluster %s after %d failures", c.o.Addr, failures)
+				c.Reset()
 			}
-			c.Reset()
 			time.Sleep(faultyCheckPeriod)
 		}
 	}
