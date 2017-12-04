@@ -56,12 +56,13 @@ type DialFunc func(network, addr string) (*redis.Client, error)
 type Cluster struct {
 	o Opts
 	mapping
-	pools         map[string]clusterPool
-	poolThrottles map[string]<-chan time.Time
-	resetThrottle *time.Ticker
-	callCh        chan func(*Cluster)
-	stopCh        chan struct{}
-	ioError       int32
+	pools            map[string]clusterPool
+	poolThrottles    map[string]<-chan time.Time
+	resetThrottle    *time.Ticker
+	callCh           chan func(*Cluster)
+	stopCh           chan struct{}
+	ioError          int32
+	ioMonitorRunning int32
 
 	// This is written to whenever a slot miss (either a MOVED or ASK) is
 	// encountered. This is mainly for informational purposes, it's not meant to
@@ -438,12 +439,16 @@ func justTried(tried map[string]bool, addr string) map[string]bool {
 	return tried
 }
 
+func (c *Cluster) checkFaulty() {
+	notRunning := atomic.CompareAndSwapInt32(&c.ioMonitorRunning, 0, 1)
+	if notRunning {
+		go c.faultyMonitor()
+	}
+}
+
 func (c *Cluster) setFaulty(s bool) {
 	if s {
-		changed := atomic.CompareAndSwapInt32(&c.ioError, 0, 1)
-		if changed { // Before it was 0
-			go c.faultyMonitor()
-		}
+		atomic.StoreInt32(&c.ioError, 1)
 	} else {
 		atomic.StoreInt32(&c.ioError, 0)
 	}
@@ -455,23 +460,31 @@ func (c *Cluster) isFaulty() bool {
 }
 
 func (c *Cluster) faultyMonitor() {
+	defer func() {
+		atomic.StoreInt32(&c.ioMonitorRunning, 0)
+	}()
+
 	failures := 0
-	for c.isFaulty() {
+	checked := make(chan bool)
+	for {
 		c.callCh <- func(c *Cluster) {
-			if !c.isFaulty() {
-				return
-			}
+			defer func() {
+				checked <- true
+			}()
 
 			p := c.getRandomPoolInner()
 			if p.Pool == nil {
+				c.setFaulty(true)
 				return
 			}
 
 			if e := c.resetInnerUsingPool(p); e != nil {
+				c.setFaulty(true)
 				return
 			}
 
 			if len(c.pools) == 0 {
+				c.setFaulty(true)
 				return
 			}
 
@@ -479,33 +492,41 @@ func (c *Cluster) faultyMonitor() {
 			for _, p := range c.pools {
 				client, err := p.Get()
 				if err != nil {
+					c.setFaulty(true)
 					return
 				}
 				r := client.Cmd("CLUSTER", "INFO")
 				if r.Err != nil {
+					c.setFaulty(true)
 					return
 				}
 				p.Put(client)
 				// Check the node in the cluster and it's ok
 				if !strings.Contains(r.String(), "cluster_state:ok") {
+					c.setFaulty(true)
 					return
 				}
 			}
-			log.Printf("Cluster %s recovered", c.o.Addr)
-			c.setFaulty(false)
+			if c.isFaulty() {
+				c.setFaulty(false)
+				log.Printf("Cluster %s recovered", c.o.Addr)
+			}
+		} // End of spinner func
+
+		<-checked
+		if !c.isFaulty() {
+			return
 		}
 
-		if c.isFaulty() {
-			failures++
-			if failures == 1 {
-				log.Printf("Cluster %s entered into faulty mode", c.o.Addr)
-			}
-			if failures%5 == 0 {
-				log.Printf("Trying reset on cluster %s after %d failures", c.o.Addr, failures)
-				c.Reset()
-			}
-			time.Sleep(faultyCheckPeriod)
+		failures++
+		if failures == 1 {
+			log.Printf("Cluster %s entered into faulty mode", c.o.Addr)
 		}
+		if failures%2 == 0 {
+			log.Printf("Trying reset on cluster %s after %d failures", c.o.Addr, failures)
+			c.Reset()
+		}
+		time.Sleep(faultyCheckPeriod)
 	}
 }
 
@@ -535,7 +556,7 @@ func (c *Cluster) clientCmd(
 
 	// Deal with network error
 	if r.IsType(redis.IOErr) {
-		c.setFaulty(true)
+		c.checkFaulty()
 		// Give up and return the most recent error
 		// The faulty monitor will recover
 		return r
