@@ -1026,18 +1026,15 @@ func (r *Resp) Compress(minSize int, marker []byte) *Resp {
 		return r
 	}
 
+	if !r.IsType(Array) {
+		return nil
+	}
 	vals, ok := r.val.([]Resp)
 	if !ok {
 		return nil
 	}
-	for i, arg := range vals {
-		if !arg.IsType(Str) {
-			continue
-		}
-		r2 := arg.Compress(minSize, marker)
-		if r2 != nil {
-			vals[i] = *r2
-		}
+	for i := range vals {
+		(&vals[i]).Compress(minSize, marker)
 	}
 	return r
 }
@@ -1076,39 +1073,15 @@ func (r *Resp) Uncompress(marker []byte) *Resp {
 		return r
 	}
 
+	if !r.IsType(Array) {
+		return nil
+	}
 	vals, ok := r.val.([]Resp)
 	if !ok {
 		return nil
 	}
-	for i, arg := range vals {
-		if arg.IsType(Str) {
-			r2 := arg.Uncompress(marker)
-			if r2 != nil {
-				vals[i] = *r2
-			}
-			continue
-		}
-
-		if arg.IsType(Array) {
-			array, err := arg.Array()
-			if err != nil {
-				continue
-			}
-
-			for k, e := range array {
-				if !e.IsType(Str) {
-					continue
-				}
-				r2 := e.Uncompress(marker)
-				if r2 != nil {
-					// Should copy the pointer?
-					*array[k] = *r2
-				}
-			}
-			continue
-		}
-
+	for i := range vals {
+		(&vals[i]).Uncompress(marker)
 	}
 	return r
-
 }
